@@ -1,0 +1,376 @@
+#!/usr/bin/python3
+#
+#
+#
+
+import argparse
+import logging
+import pathlib
+import serial
+import struct
+import json
+import sys
+import re
+
+from intelhex import IntelHex
+
+from pexpect_serial import SerialSpawn
+
+SERIAL_PORT='/dev/ttyS3'
+SERIAL_SPEED=9600
+
+DEFAULT_START_ADDRESS = 0x8100
+
+class StreamToLogger(object):
+   """
+   Fake file-like stream object that redirects writes to a logger instance.
+   """
+   def __init__(self, logger, log_level=logging.INFO):
+      self.logger = logger
+      self.log_level = log_level
+      self.linebuf = ''
+
+   def write(self, buf):
+      for line in buf.rstrip().splitlines():
+         self.logger.log(self.log_level, line.rstrip())
+
+   def flush(self):
+      pass
+
+class Assembler():
+
+    """
+        Originally from github.com:rohithill/8085Assembler.git but heavily modified
+    """
+
+    def __init__(self):
+
+        # load the opcode table
+        self.load_optab()
+
+        self.SYMTAB = dict()
+        self.CONSTTAB = dict()
+
+        # regex to catch a typical "label: instruction arg1 <arg2> ; comment"
+        self.re_line = re.compile(
+            r'^(?:\S*\s+)?(?P<instr>[A-Za-z]{2,4})\s*(?P<arga>[A-Za-z0-9$#]*)\s*(?:,\s*(?P<argb>[A-Za-z0-9$#]+))?'
+        )
+
+        # regex to catch a assember "label:  asadsddsd" 
+        self.re_label = re.compile(
+            r'^(?P<label>\w+:)\s*(?:(?P<instr>[A-Za-z]{2,4})|$)'
+        )
+
+        return
+
+    def load_optab(self):
+
+        path = pathlib.Path(__file__).parent.absolute()
+
+        with open(path.joinpath('optab.json'),'r') as f:
+            self.optab = json.load(f)
+
+        return
+
+    def run(self,input_file,output_file):
+        
+        intermediate_code = self.pass1(input_file)
+        
+        logging.debug("symbol table:")
+        logging.debug(json.dumps(self.SYMTAB))
+
+        logging.debug("constant table:")
+        logging.debug(json.dumps(self.CONSTTAB))
+
+        output = self.pass2(intermediate_code)
+
+        ih = IntelHex()
+
+        for loadaddress in output:
+
+            ih.frombytes(output[loadaddress], loadaddress)
+
+        ih.write_hex_file(output_file)
+
+        logging.info("Assembly complete")
+
+    def pass1(self,input_file):
+
+        intermediate_code = list()
+
+        logging.debug("Assembler pass1")
+
+        program_counter = DEFAULT_START_ADDRESS
+
+        for asmfilename in input_file:
+
+            with open(asmfilename) as asmfile:
+
+                lineno = 0
+
+                for line in asmfile.readlines():
+
+                    # start at 1
+                    lineno += 1
+
+                    # skip whitespace or commmented lines
+                    if line.rstrip() == '' or (len(line.strip()) and line.strip()[0] == ';'):
+                        #logging.error("Skipping - {0} at line {1}".format(line,lineno))
+                        continue
+
+                    if (len(line.strip()) and line.strip()[0] == '.'):
+                        logging.debug("Skipping dot directive {0} at line {1}".format(line.rstrip(),lineno))
+                        continue
+
+                    # fine any labels on the line
+                    m = self.re_label.match(line)
+
+                    if m is not None:
+                        logging.debug("Found label {0} at line {1}".format(m.group('label'), lineno))
+
+                        label = m.group('label').upper().split(':')[0]
+
+                        if label in self.SYMTAB:
+                            raise Exception(f'Label redefined - {label}')
+                        else:
+                            self.SYMTAB[label] = program_counter
+
+                        if m.group('instr') is None:
+                            # no code on that label line - skip to next
+                            continue
+
+                    m = self.re_line.search(line)
+
+                    if m is not None:
+                        #logging.debug("INSTR - {0}\t:at line {1}".format(m.group('instr'),lineno))
+
+                        # build our parsed instruction
+                        instruction = []
+
+                        instruction.append(m.group('instr').upper())
+                        
+                        if m.group('arga'):
+                            instruction.append(m.group('arga'))
+
+                        if m.group('argb'):
+                            instruction.append(m.group('argb'))
+
+                        if len(instruction) == 2 and instruction[0] == 'JMP' and instruction[1] == '$1':
+                            # replace with jump back to monitor - probably throws off PC
+                            instruction = ['RST','7']
+
+                        # increment our program counter and add the instruction to the code stream
+                        program_counter += self.getSize(instruction[0])
+                        intermediate_code.append(instruction)
+
+                        continue
+
+                    # some unexpected line from the parser
+                    if line != '':
+                        logging.error("Skipping - {0}\t:at line {1}".format(line.rstrip(),lineno))
+
+        return intermediate_code
+
+    def pass2(self,intermediate_code):
+
+        program_counter = DEFAULT_START_ADDRESS
+
+        output = {
+            # int array indexed by load address
+            program_counter : bytearray()
+        }
+
+        logging.debug("Assembler pass2")
+
+        for instruction in intermediate_code:
+
+            # all opcodes are processed in uppercase
+            instruction = [x.upper() for x in instruction]
+
+            logging.debug('processing instruction: {0}'.format(instruction))
+            
+            # decode our next instruction
+            opcode = instruction[0]
+            extra_arg = 0
+            machine_code = 0
+
+            # multi-arg instruction
+            if self.optab[opcode]['partial']:
+
+                if opcode == 'MOV':
+                    # combine our args for the opcode lookup
+                    machine_code = int(self.optab[opcode][','.join([instruction[1],instruction[2]])],16)
+                else:
+                    # lookup opcode based on first arg
+                    machine_code = int(self.optab[opcode][instruction[1]],16)
+
+                # intruction has a second arg
+                if self.optab[opcode]['argsize']:
+                    # resolve argument from symbol to value
+                    extra_arg = self.getSymbol(instruction[2])
+            # 
+            else:
+                # opcode lookup
+                machine_code = int(self.optab[opcode]['mcode'],16)
+
+                # opcode expects a arg
+                if self.optab[opcode]['argsize']:  
+                    # resolve argument from symbol to value
+                    extra_arg = self.getSymbol(instruction[1])
+
+            # add our machine code to the output
+            output[program_counter].append(machine_code)
+
+            # take the resolved extra arg and convert into correct type
+            if self.optab[opcode]['argsize']:
+
+                logging.debug("extra_arg:{0}".format(extra_arg))
+                logging.debug("arg_size:{0}".format(self.optab[opcode]['argsize']))
+
+                if self.optab[opcode]['argsize'] == 1: # 8 bit value
+                    output[program_counter] += struct.pack('<b', extra_arg)
+                elif self.optab[opcode]['argsize'] == 2: # 16 bit value little endian
+                    output[program_counter] += struct.pack('<H', extra_arg)
+                else:
+                    logger.error("Unknown argument size {0} for opcode {1}".format(self.optab[opcode]['argsize'],opcode))
+
+        return output
+
+    def getSize(self,opcode):
+        logging.debug('opcode:{0}'.format(opcode))
+        logging.debug('opcode arg size:{0}'.format(self.optab[opcode]['argsize']))
+        return 1 + self.optab[opcode]['argsize']
+          
+    def getSymbol(self, val):
+        logging.debug('symbol:{0}'.format(val))
+
+        # are we referencing a labal ?
+        if val in self.SYMTAB:
+            return self.getValue(self.SYMTAB[val])
+        # are we referencing a constant ?
+        elif val in self.CONSTTAB:
+            return self.getValue(self.CONSTTAB[val])
+        
+        return self.getValue(val)
+        
+    def getValue(self, val):
+        logging.debug('raw value:{0}'.format(val))
+
+        if isinstance(val,int):    # we've already converted
+            pass 
+        elif val.endswith('H'):    # hex value
+            val = int(val[:-1],16)
+        elif val.endswith('B'):    # binary
+            val = int(val[:-1],2) 
+        elif val.startswith('#'):  # immmedaite int
+            val = int(val[1:])
+        else:                      # dunno - guess int
+            val = int(val[:-1])
+
+        logging.debug('converted value:{0}'.format(val))
+
+        return val
+
+logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s', datefmt='%Y-%m-%dT%H:%M:%S%z', level=logging.INFO)
+
+def main(arguments):
+    
+    if arguments.action == "upload":
+
+        ih = IntelHex(arguments.hexfile)
+
+        with open(arguments.hexfile) as hexfile:
+
+            data = hexfile.read()
+            
+            logging.debug("Loaded hex file:")
+
+            log = logging.getLogger('expect')
+            stream = StreamToLogger(log,logging.DEBUG)
+
+            ih.dump(tofile=stream)
+
+            upload_file(data)
+
+    elif arguments.action == "assemble":
+
+        if arguments.asmfile is None or arguments.hexfile is None:
+            logging.error('Please set --asmfile and --hexfile')
+            return
+
+        assemble(arguments.asmfile, arguments.hexfile)
+
+    elif arguments.action == "run":
+            
+        run()
+
+    else:
+        logging.error("Action unknown")
+    
+    return
+
+def assemble(asmfile, hexfile):
+    '''
+    '''
+    logging.info("Assembling {0} into {1}".format(asmfile, hexfile))
+
+    assemble = Assembler()
+ 
+    assemble.run(asmfile, hexfile)
+
+    return
+
+def run(port=SERIAL_PORT,port_speed=SERIAL_SPEED):
+    '''
+    '''
+
+    with serial.Serial(port, port_speed, timeout=10) as ser:
+        ss = SerialSpawn(ser,timeout=10)
+
+        log = logging.getLogger('expect')
+        ss.logfile = StreamToLogger(log,logging.DEBUG)
+
+        ss.sendline('j')
+        ss.expect('jump to address')
+        ss.sendline('8100')
+
+        logging.info("8085 program started")
+
+    return
+
+def upload_file(data, port=SERIAL_PORT,port_speed=SERIAL_SPEED):
+    '''
+    '''
+
+    with serial.Serial(port, port_speed, timeout=10) as ser:
+        ss = SerialSpawn(ser,timeout=10)
+
+        log = logging.getLogger('expect')
+        ss.logfile = StreamToLogger(log,logging.DEBUG)
+
+        ss.sendline('l')
+        ss.expect('load Intel hex file')
+        ss.sendline(data)
+        ss.sendline('\r\n')
+        ss.expect('8100>')
+
+        logging.info("8085 program uploaded")
+
+    return
+
+if __name__== "__main__":
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('action', help='action to perform', choices=['upload', 'run','assemble'])
+    parser.add_argument('--hexfile', type=str, help='location the hexfile')
+    parser.add_argument('--asmfile', type=str, action='append', help='location the asmfile')
+    parser.add_argument('--verbose', '-v', action='count', default=0)
+
+    args = parser.parse_args()
+
+    if args.verbose:
+        logger = logging.getLogger()
+        logger.setLevel(logging.DEBUG)
+        
+    main(args)
