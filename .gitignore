@@ -2,3 +2,6 @@
 bin/asm
 bin/dasm
 bin/cc
+
+#
+.vscode

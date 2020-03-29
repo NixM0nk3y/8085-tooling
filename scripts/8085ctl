@@ -265,7 +265,7 @@ class Assembler():
         elif val.startswith('#'):  # immmedaite int
             val = int(val[1:])
         else:                      # dunno - guess int
-            val = int(val[:-1])
+            val = int(val)
 
         logging.debug('converted value:{0}'.format(val))
 
