@@ -17,5 +17,11 @@ main() {
 
     *results = c;
 
+    /* output to led port */
+    #asm
+        lda     8200H
+        out     #0
+    #endasm
+
 	return;
 }
