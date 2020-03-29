@@ -50,15 +50,15 @@
         "argsize": 1,
         "mcode": "E6"
     },
-    "CALL": {
-        "partial": false,
-        "argsize": 2,
-        "mcode": "CD"
-    },
     "ARHL": {
         "partial": false,
         "argsize": 0,
         "mcode": "10"
+    },
+    "CALL": {
+        "partial": false,
+        "argsize": 2,
+        "mcode": "CD"
     },
     "CC": {
         "partial": false,
@@ -260,6 +260,11 @@
         "partial": false,
         "argsize": 2,
         "mcode": "2A"
+    },
+    "LHLX": {
+        "partial": false,
+        "argsize": 0,
+        "mcode": "ED"
     },
     "LXI": {
         "partial": true,
@@ -499,6 +504,11 @@
         "partial": false,
         "argsize": 2,
         "mcode": "22"
+    },
+    "SHLX": {
+        "partial": false,
+        "argsize": 0,
+        "mcode": "D9"
     },
     "SIM": {
         "partial": false,

@@ -52,15 +52,15 @@ ccgint: mov     a,m
 ;        stax    d
 ;        ret
 ; store int from HL into (DE)
-ccpint: mov     a,l
-        stax    d
-        inx     d
-        mov     a,h
-        stax    d
-        ret
-; store int from HL into (DE) - 8085 undocumented instructions
-;ccpint: shlx
+;ccpint: mov     a,l
+;        stax    d
+;        inx     d
+;        mov     a,h
+;        stax    d
 ;        ret
+; store int from HL into (DE) - 8085 undocumented instructions
+ccpint: shlx
+        ret
 ; "or" HL and DE into HL
 ccor:   mov     a,l
         ora     e
