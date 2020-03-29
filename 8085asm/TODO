@@ -1,0 +1,3 @@
+ASSEMBLER don't detect code erros (possible crashs)
+
+DISASM don't detect differences between code an data
