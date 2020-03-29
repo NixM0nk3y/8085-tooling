@@ -12,6 +12,9 @@ http://www.kswichit.com/mtk-85/index.html
 * ./scripts:
   - 8085ctl - python script to allow interaction with also includes a basic python based assembler
 
+* ./src - various c + assembler examples
+
 ## usage
 
 ``` make tools ``` will bootstrap the compiler and the assembler
+``` make example ``` will compile a example program
