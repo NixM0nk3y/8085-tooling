@@ -1,13 +1,17 @@
 
-various script and tools used to work with the 8085 development board from:
+#various script and tools used to work with the 8085 development board from:
 
 http://www.kswichit.com/mtk-85/index.html
 
-* contents *
+## contents 
 
-./8085asm - simple 8085 assembler from https://sourceforge.net/p/lc8085asm/wiki/Home/
+* ./8085asm - simple 8085 assembler from https://sourceforge.net/p/lc8085asm/wiki/Home/ ( only used to check the python version )
 
-./smallC - C compiler for 8085 from https://github.com/ncb85/SmallC-85
+* ./smallC - C compiler for 8085 from https://github.com/ncb85/SmallC-85
 
-./scripts:
+* ./scripts:
   - 8085ctl - python script to allow interaction with also includes a basic python based assembler
+
+## usage
+
+``` make tools ``` will bootstrap the compiler and the assembler
